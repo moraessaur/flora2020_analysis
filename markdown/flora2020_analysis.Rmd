@@ -1,0 +1,1179 @@
+---
+title: "Brazilian Flora 2020 - Exploratory Analysis"
+author: "Lucas Moraes"
+date: "23/01/2019"
+output:
+  html_document:
+    df_print: paged
+    theme: paper
+    code_folding: show
+    toc: true
+    toc_float: true 
+    toc_depth: 4
+    number_sections: true
+header-includes:
+      - \renewcommand{\contentsname}{Content}
+urlcolor: blue
+---
+
+<style>
+body {
+font-family: Sans-serif;
+font-size: 16pt;
+text-align: justify}
+p.caption {
+  font-size: 0.85em;
+}
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = "C:/Users/morae/Dropbox/tech/github/flora2020_analysis")
+```
+
+
+***
+# Introduction
+***
+
+This is a small exercise exploring some of the data from the [Flora 2020 project](http://floradobrasil.jbrj.gov.br/). I use mainly the tidyverse to wrangle and manipulate data frames and plot some graphics exploring different information stored in the [Internet Publishing Toolkit of the Flora2020 project](http://ipt.jbrj.gov.br/jbrj/resource?r=lista_especies_flora_brasil). This information is stored as [Darwin Core (DwC-A)](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC3253084/pdf/pone.0029715.pdf), a data standard for publishing biodiversity information.  
+
+The current dataset consists of a series files that comprise a relational database. Each of these contain all information stored in the Flora 2020 project for all taxonomic levels (from kingdoms to subspecies) of botanic entities included in the project. These information entails species description data (such as species description years), ecological data (such as the type of vegetation a given taxa was recorded in) and many more. The Flora 2020 database is one of the most complete and robust information vaults for a given nation's flora (more on this project on [this paper](http://www.scielo.br/pdf/rod/v69n4/2175-7860-rod-69-04-1513.pdf)).
+
+This data will be compiled, wrangled, analyzed and plotted in an exploratory manner, using the tidyverse, some written functions and a few additional packages. Besides setting some small examples of my coding, this post will also serve as a place to store some of my own R snippets.
+
+All functions written for this activity can be accessed **here**.
+
+## Tracing a direction
+***
+
+Although there are no definite questions which answers are being sought, I will analyze specific portions of the whole dataset which I think might yield interesting results/patterns. Most of these are small analyses that were forgotten in my drawer. I will be guided towards the analysis of three main data groups:
+
+1. **Temporal description data:** the year in which species where described.
+
+2. **Ecological and distribution data:** In which brazilian states species occurr, how those relate with the description data, which life forms are more frequent and more.
+
+3. **Vernacular name data:** a small analysis to discover the most frequent popular plant names of the sample and if they refer to species from different families.
+
+It is important to notice that most of these will be analyzed at a **species** level, although the data set has information for virtually all taxonomic levels possible.
+
+
+## Loading all packages, functions and downloading the data:
+***
+Firstly I will load all required packages and functions I have written for this exercise:
+
+```{r, warning=FALSE, message=FALSE}
+library(tidyverse) 
+library(lubridate) # to deal with dates
+library(cowplot)# plot grid
+library(ggrepel) # plot annotation aid
+library(forcats) # for factor manipulation in plots
+library(PNWColors)# gonna the use "bay" color palette from the PNWColors package
+  # will be using this palette in several plots
+  # https://github.com/jakelawlor/PNWColors <- very good
+library(jsonlite)# for json string manipulation and functions
+source("scripts/flora_2020_analysis_functions.R") # in-house functions
+```
+
+
+
+Second thing is to download the data and start compiling and wrangling all information needed, which is available in the [Internet Publishing Toolkit of the Flora2020 project](http://ipt.jbrj.gov.br/jbrj/resource?r=lista_especies_flora_brasil). 
+
+I will download the most updated DwC-A, which currently refers to February 14th, 2020. This may take some time depending on internet speed and can also be done manually:
+
+
+```{r, message=FALSE,warning=FALSE}
+url <- 'http://ipt.jbrj.gov.br/jbrj/archive.do?r=lista_especies_flora_brasil&v=393.224'
+download.file(url, destfile = "data.zip", mode="wb")   
+unzip(zipfile = "data.zip",exdir = "data")
+```
+
+The information I seek is in the .txt files contained in the DwC-A:
+
+  
+```{r}
+grep(".txt",list.files("data/"),value=TRUE)
+```
+
+These consist of a relational database guided by an id column for each taxonomic entry. I am interested in compiling information from 5 of these files:
+
+1.**taxon.txt:** Contains the most primary information I need in order to start the analyzes, which are all taxonomic profiles in the database. This file will be used to access the id's of all **species** from the dataset.
+
+2.**reference.txt**: Contains information pertaining the description year and author for taxa.
+
+3.**distribution.txt:** Contains information regarding if taxa are native, if they are endemic and in which phytogeographic domains and brazilian states they occurr.  
+
+4.**specieprofile.txt:** Contains information regarding the life form, habitat and vegetation types of occurrence for several taxa.
+
+5.**vernacular.txt:** Contains species vernacular names. 
+
+I will not be using the remaining two .txt files, `typesandspecimen.txt` and `resourcerelationship.txt`, since they refer to data not analyzed here. It is also worth remembering that the information I seek may not be available for all species in the sample.
+
+Will then read all files:
+
+```{r, warning=FALSE, message=FALSE}
+taxon <- read_delim(file="data/taxon.txt", delim = "\t")
+distribution <- read_delim(file="data/distribution.txt", delim = "\t")   
+references <- read_delim("data/reference.txt", delim = "\t")
+vernacular <- read_delim("data/vernacularname.txt", delim = "\t")
+profile <- read_delim("data/speciesprofile.txt", delim = "\t")
+```
+
+I want to extract all information needed from these files and store it in a single data frame which will be used for most of the analyses. I will call it `df_master` and start compiling it now.
+
+***
+# Data compilation and wrangling:
+***
+
+## Filtering native accepted species and creating `df_master`:
+***
+
+First thing will be to extract information regarding exclusively native accepted named species, that is, species that are native to Brazil and that are not synonims, invasive or naturalized. After compiling this information, I will be able to extract the remaining by using these species id's as reference.
+
+This can be done by first filtering information of three columns of the `taxon` data frame: `taxonomicStatus`, `nomenclaturalStatus` and `taxonRank`.
+
+The `taxonomicStatus` column indicates wheter a record refers to a accepted name or sinonym:
+
+```{r}
+unique(taxon$taxonomicStatus)
+```
+
+The `nomenclaturalStatus` column indicates if the name is correct or there are any kinds of issues/particularities with it:
+
+```{r}
+unique(taxon$nomenclaturalStatus)
+```
+
+A given species can have its name not yet published or the name can be incorrectly catalogued for some reason. I will stick to only using species which have correct names, with no issues whatsoever.
+
+Finally, the `taxonRank` column indicates the taxonomic level of the record:
+
+```{r}
+unique(taxon$taxonRank)
+```
+
+A given entry in the data frame can refer to several different taxonomic levels. I will filter species out from `taxon` using a very conservative approach, filtering only accepted non synonimous names: 
+
+```{r}
+taxon <- taxon %>% filter(taxonomicStatus == "NOME_ACEITO", #only accepted names
+                              nomenclaturalStatus == "NOME_CORRETO", #only correct names
+                              taxonRank == "ESPECIE") #only names that refer to species
+```
+
+Still, species have not been filtered according to their "nativeness". This information is not present in `taxon`, being part of the `establishmentMeans` column from the `distribution` data frame. I need to filter these. I can do that by filtering all entries that refer to native taxa of the `distribution` data frame and match the id's with the `taxon` data frame, which only contains accepted names now:
+
+```{r}
+# filter by native entries
+distribution <- distribution %>% filter(establishmentMeans == "NATIVA") 
+
+#extract id's that refer to native taxa
+ids_native <- unique(distribution$id) 
+
+# match the accepted name ids from the taxon df with the ids from the native id list
+
+positions <- match(ids_native,taxon$id) %>% #match the id's positions
+             na.omit() %>% #remove NA values
+             unique() #unique values all referring to native accepted species
+taxon <- taxon[positions,] #filter only the queried id's
+```
+
+`taxon` now only contains information regarding native, accepted, issue free, species names. This will be the starting point for the compilation of the `df_master` data frame. I will create it by selecting the variables of interest from `taxon`:
+
+```{r}
+# select variables of interest from the taxon data frame and store in df_master
+df_master <- taxon %>% 
+              select(id, # species id
+                     scientificName, # scientific name
+                     higherClassification, # high level taxonomy
+                     family) # species family
+```
+
+We can preview `df_master` to check its structure:
+
+```{r, warning=FALSE}
+head(df_master)
+```
+
+Several values of the `family` column are stored as `NA`. This is because the first entries of the dataframe refer to algae, which do not have this information available. For other plant groups though, the information is there:
+
+```{r}
+head(unique(df_master$family))
+```
+
+`df_master` now contains around 38,000 entries regarding native brazilian species. Next step is to extract information from the remaining data frames and compile it directly in `df_master`.
+
+##  Compiling the remaining information:
+***
+
+Specifically, I need the information listed below from the remaining DwC-A files, for each species included in `df_master`:
+
+* Description year
+* Description author
+* Phytogeographic domains of occurrence
+* Federation states of occurrence
+* Life Forms
+* Vegetation Types of occurrence
+* Vernacular names
+
+I will do that by matching the id's of `df_master` with the remaining df's, just like before.
+
+<br>
+
+#### Species description data: when and by whom
+***
+
+Species description authors and years will allow me to analyze how these behave through time.
+This information will come from the `references` dataframe. The column `creator` contains the name of the description author and the column `date` contains the description year. These can be readily included in `df_master`, by matching the species id's I already have. I will also start giving more intuitive names to these columns:
+
+
+```{r}
+#ids for species in df_master
+id_vector <- df_master$id 
+
+# now extract info from the references df (references.txt)
+
+#column "creator" has the description author info, renamed to "descriptor" 
+df_master["descriptor"] <- references$creator[match(id_vector,references$id)] 
+
+#column "date" has the description year, now renamed "desc_year"
+df_master["desc_year"] <- references$date[match(id_vector,references$id)] 
+```
+
+Dates often have issues in biodiversity databases, mainly due to different input styles, typos or else. The `date` column in this case is also formatted as character, when it should be a numeric at least. It could also be stored as `datetime`, but since we only have years as dates, this will not be the case.
+
+By checking some preliminary values, I can see if there are issues:
+
+```{r}
+unique(df_master$desc_year)[250:272] 
+```
+
+By sampling the positions above, I already can identify a series of problems:
+
+* Some entries are actually doi's from the published paper referring to the species description.
+* Several entries with letters or even only letters
+* Weird numbers such 60 or 906 that do not properly represent years
+* Entries with more than one year (**e.g.** 1989/1990)
+
+These entries do not represent reliable information and as such, will be filtered out. I cannot filter the whole rows out since I will lose other information by doing that, so I will coerce the above cases to `NA`. 
+
+I will first write a small function:
+
+
+```{r}
+# clean dates function:
+  # input a string and the function will coerce it to NA
+  # if it is not four characters in length
+
+clean_dates <- function(x){ # where x is a string
+  if(is.na(x)){return(NA) #keeps the NA value if the entry is already a NA
+    break
+  } 
+  if (nchar(x) == 4){return(x)}#Check if the entry has four characters 
+  else{return(NA)}} #if it does not, return NA
+```
+
+The function `clean_dates` converts to `NA` any string that does not have exactly 4 characters. This solves problems such as doi's and nonsensical numbers. Even so, there are strings with four characters that still do not represent dates, as they contain letters. This is simple to solve, since by converting a string to numeric, if it contains any letters, it will be automatically coerced to NA. 
+
+The `purrr` package's `map` function is the equivalent to the base-r `apply` function. I will map `clean_dates` to the whole `desc_year` column and convert it to numeric:
+
+```{r,warning = FALSE}
+df_master[['desc_year']] <- df_master[['desc_year']] %>% #select column
+                              map(clean_dates) %>%  #apply clean_dates to column
+                              as.numeric() #convert to numeric
+```
+
+By running some simple summary statistics, the integrity of remaining values of this column can be further checked:
+
+```{r}
+summary(df_master[['desc_year']])
+```
+
+The min and max values are obviously wrong. To clean even further the information in this column, I will establish a temporal boundary for the description years. It does not make any sense to have decriptions before the consolidation of the binominal system and there is even less sense in description years higher than 2020. I will then establish 1700 and 2020 as temporal boudaries. Every entry that spams outside this treshold will be coerced to NA. This may be done writing another simple function and mapping it to the column:
+
+```{r}
+# this function convert all values outside the threshold to NA:
+
+year_fix <- function(x){
+  if (is.na(x)){return(NA)} #if the year is NA, return NA 
+  if (x<1500 || x>2020){return(NA)}else{return(x)} #values outside the boundary as NA
+}
+
+# map the function to the column
+  # combined dplyr's mutate and purrr's modify functions
+  # modify is the same as map, but returns a vector
+  # mutate stores the vector in the desc_year column
+
+df_master <- df_master %>% mutate(desc_year = modify(df_master[['desc_year']],year_fix))
+```
+
+Now it seems that all of the column's information is makes sense:
+
+```{r}
+sort(unique(df_master[['desc_year']]))
+```
+<br>
+
+#### Distribution data: states, domains and endemism
+***
+
+Next step is to add the required information from the `distribution` data frame. Specifically, I want to add information about species federation states and phytogeographic domains of occurrence, as well as if they are endemic or not.
+
+The `location_id` column contains information regarding species states of occurrence. Here each id is repeated in the `distribution` dataframe for each state a given species occurrs, meaning each species has `n` rows equal to the number of states, each row containing a single state of occurrence. Using a single species id as example:
+
+```{r}
+distribution %>% filter(id == 264)
+```
+ 
+This species, occurrs in three states (PA,AM,AC), each row corresponding to a state. This will be collapsed to a single row in `df_master`.
+
+I wrote a small function, `collapse_column`, to do that.
+
+`collapse_column` takes as arguments the species id, the data frame currently being worked on, the column that should be collapsed and the split character. It returns a single string with all values delimited by the split character:
+
+```{r}
+collapse_column <- function(x,column,df,split_character=";"){ # input arguments
+  df_temp <- df %>% filter(id == x) # filter by species id
+  
+  # if this information does NOT exist for the species, return NA
+  if (length(rownames(df_temp)) == 0){return(NA)} else { 
+    # if it exists, paste all information in a single string
+    output <- paste(df_temp[[column]],collapse = split_character) 
+    return(output) # return the string in which each state is separated by a ";"
+  }
+}
+
+# testing with the species example
+collapse_column(264,"locationID",distribution) 
+
+```
+
+Seems to be working fine. Now the function will be mapped using all id's from `df_master`. I will create a column called `states`:
+
+
+```{r}
+#apply function to all id`s
+df_master['states'] <- map(id_vector,collapse_column,column="locationID",df=distribution) %>% 
+                        gsub("BR-","",.) #remove prefix for cleaner output
+```
+
+Now `df_master` has a column with all states of occurrence for each species in a single row. The prefix "BR-" was also removed for a cleaner output, since all species considered are native to Brazil:
+
+```{r}
+df_master['states'] %>% slice(1:10) #first ten entries of the column
+```
+
+
+The remaining information needed (domains of occurrence and endemism) is contained in the `occurrenceRemarks` column of the `distribution` data frame currently being working on, as JSON:
+
+```{r}
+distribution$occurrenceRemarks[5000] #random entry
+```
+
+I will extract this information directly from the column and parse it later on. This information will be stored in a column called `distribution` in `df_master`:
+
+```{r}
+df_master['distribution']<-distribution$occurrenceRemarks[match(id_vector,distribution$id)]
+```
+<br>
+
+#### Ecological and vernacular information: Life forms, vegetation types and common names
+***
+
+Only two additional information is needed from the DwC-A: Ecological information (life forms and vegetation types of occurrence) and vernacular names (for species that have them). The former is contained in the `profile` data frame, stored in a JSON format, which also contains habitat information for the species. The column in which this information is stored is, counterintuitively, named `lifeForm`:
+
+```{r}
+profile$lifeForm[999] # random entry 
+```
+
+This will also be stored directly to `df_master` in a new column called `profile` and parsed soon:
+
+```{r}
+df_master['profile'] <- profile$lifeForm[match(id_vector,profile$id)]
+```
+
+The vernacular name information is stored in the `vernacular` data frame, in the `vernacularName` column. It is stored the same way as the states for each species was. It can be added by mapping the `collapse_column` function to the `vernacularName` column and storing the output in `df_master`, I will store it in a new column named `vernacular_name`:
+
+```{r}
+df_master['vernacular_name'] <-  
+  map(id_vector,collapse_column,
+  column="vernacularName",df=vernacular) %>% 
+  unlist() #convert to vector
+```
+<br>
+
+#### Parsing
+***
+
+Most information needed is already available in `df_master`, still need to parse some columns though. I will start by parsing columns formatted as JSON. There are several packages with functions to do that, but since I was having a bit of trouble with the input format of the DwC-A files, I wrote a function to do it, the `json_parser` function. This function convert values from JSON strings into columns.
+
+I will test the function with some random rows from the `distribution` column of `df_master`. Here's an example of the unformatted strings:
+
+```{r}
+# vector of rows from the distribution column, in json format
+df_master$distribution[1507:1508]
+```
+
+Then the same strings converted to columns with `json_parser`:
+
+```{r, warning=FALSE, message=FALSE}
+json_parser(df_master$distribution[1507:1508])
+```
+
+By using the function on the whole column, all information from the json vector can be included as new columns in `df_master`. This can be done both with both JSON columns (`distribution` and `profile`):
+
+```{r, message=FALSE}
+# parsing the distribution column
+  # each key will be a new column
+df_master <- json_parser(df_master$distribution) %>% 
+              bind_cols(df_master) %>% # bind information to the master data frame
+              select(-distribution) # remove the obsolete column
+
+# now do the same with the profile column
+df_master <- json_parser(df_master$profile) %>% 
+              bind_cols(df_master) %>% 
+              select(-profile,-habitat) # remove the obsolete column
+                                        # also removed the habitat column
+                                        # it will not be used in the analysis  
+```
+
+
+This operation created three new columns in `df_master`, each regarding a key from each JSON: the columns `lifeForm` and `vegetationType` which came from the `distribution` column and the `endemism` and `phytogeographicDomain` columns which came from the `profile` column:
+
+```{r}
+head(df_master)
+```
+
+There is still some minor parsing to be done. I included higher taxonomic information for each species in `df_master`, stored in the `higherClassification` column:
+
+```{r}
+head(df_master[["higherClassification"]])
+```
+
+These are strings delimited by a semicolon, which indicate several taxonomic levels for each species. I want to extract the second level, which is the major group to which each species belongs. This is the highest taxonomic tier I will analyze. I need to split the strings and extract the second element, like the example below:
+
+```{r}
+df_master$higherClassification[1] %>% # select the first string
+  strsplit(split = ";") %>% # split elements
+  unlist() %>% #convert to vector
+  pluck(2) #extract second element
+```
+
+I wrote another small function to be mapped to the whole column. This function, `function_string_pluck`, splits a string into a list and extracts the given position (like the example above). Just need to map the funcion to my column of interest:
+
+```{r, echo = FALSE}
+
+# this function plucks a element from a vector genereated by a string split:
+function_split_pluck <- function(string,split=";",pluck=2){
+  string %>% # string that will be splitted
+  strsplit(split = split) %>% # split argument
+  unlist() %>% # convert to vector
+  pluck(pluck) # pluck position value
+}
+```
+
+```{r}
+df_master['major_group'] <- map_chr(df_master$higherClassification, function_split_pluck)
+
+df_master <- df_master %>% select(-higherClassification) # remove obsolete column
+```
+<br>
+
+#### Final adjustments:
+***
+
+Most data is ready to go, but there are still some minor adjustments that may help the data analyzes. For instance, it would be better to remove all accents from the data frame, since they can glitch some of the plots. This can be done using the `iconv` function from base r. Since `iconv` converts the final output to strings, I will only map this function to columns that I want to modify. This can be done with `mutate_at` from `dplyr`, in combination with `iconv`:
+
+```{r}
+df_master <- df_master %>% 
+        #select columns which will be transformed
+        mutate_at(c("lifeForm","endemism","vernacular_name","major_group"),
+                  iconv,from="UTF-8",to="ASCII//TRANSLIT") # map iconv 
+                                                           # need to specify 
+                                                           # the original encoding     
+```
+
+I will also reorder and rename the columns from `df_master` in a more intuitive manner:
+
+
+```{r}
+
+df_master <- df_master %>% 
+              # reorder columns
+              select(id,major_group,
+                     family,scientificName,
+                     desc_year,descriptor,
+                     lifeForm,vegetationType,
+                     endemism,phytogeographicDomain,
+                     states,vernacular_name) %>%
+              # rename some columns
+              rename(scientific_name=scientificName,
+                                   phytogeographic_domains=phytogeographicDomain,
+                                   life_form=lifeForm,
+                                   vegetation_type=vegetationType)
+```
+
+Should be best to check the structure of `df_master`, just in case:
+
+```{r}
+str(df_master)
+```
+
+Seems everything is fine for now and all data can already be analyzed.
+
+# Data Analyses
+***
+
+I will start analyzing the data in the same order it was wrangled, crosssing different information along the way. From what I extracted from the DwC-A, data can be grouped into five main categories:
+
+1. Temporal (species description authors and years).
+2. Geographical (states of occurrence, biomes)
+3. Ecological (life forms, vegetation types, endemism)
+4. Taxonomic  (major taxonomic groups).
+5. Vernacular (species popular names)
+
+All of this data is properly included and formatted in the `df_master` data frame, which I will mostly be using from now on.
+
+## Species descriptions: values through time
+***
+
+How do species descriptions behave trough time? Description years are stored in the `desc_column`, although it is only available for `r format(length(grep("[0-9]",df_master$desc_year)),big.mark=",")` species, roughly 60% of the whole sample. It is safe to assume that recent years have higher description rates than past years. Still, it should be interesting to take a closer look at the distribution of these values.
+
+I will plot the histogram and the density of the number of descriptions per year using `ggplot2` and `cowplot`: 
+
+```{r, fig.align="center",dpi=300, fig.cap="Histogram **(A)** and Density **(B)** of total annual species descriptions.", warning=FALSE,message=FALSE,warning=FALSE}
+
+# first the histogram of the yearly descriptions:
+
+p2 <- df_master %>% 
+        filter(!is.na(desc_year)) %>% #removing NA values 
+          ggplot(aes(x=desc_year)) + 
+          geom_histogram(color = "black", fill = "#00496F", #colors
+                         bins = 270) + #bin number
+          scale_x_continuous(breaks=seq(1750,2020,50)) + #x axis ticks
+          theme(axis.text.x = element_text(angle = 90)) + # x axis text angle
+          xlab("Year") + # x axis label
+          ylab("Described species number") + # y axis label
+          theme(panel.grid.major.y =element_line(size = 0.3, # grid layout 
+                                                 linetype = 'dotted',
+                                                 colour = "black"),
+                panel.background = element_blank()) + # remove grid background
+                geom_vline(xintercept=median(as.numeric(na.omit(df_master$desc_year)))
+                           , linetype = "dashed",size = 0.5) #vertical median line 
+          
+
+# Second, plot the density:
+
+p3 <- df_master %>%  
+        ggplot(aes(x=desc_year)) + 
+        geom_density(color = "black", fill = "#00496F") +  
+        scale_x_continuous(breaks=seq(1750,2020,50)) + 
+        theme(axis.text.x = element_text(angle = 90)) + 
+        xlab("Year") + 
+        ylab("Described species density") +
+        theme(panel.grid.major.y =element_line(size = 0.5, linetype = 'dotted',colour = "black"),
+              panel.background = element_blank(), 
+              plot.title = element_text(hjust=0.5)) + 
+        geom_vline(xintercept=median(as.numeric(na.omit(df_master$desc_year))), linetype = "dashed",size = 0.5) 
+
+# create grid and plot labels with cowplot
+(grid_p <- plot_grid(p2,p3, ncol = 2,labels = c('A', 'B')))
+```
+<br>
+Firstly, there is a relatively low number of species descriptions. This is only natural to expect, since the linnean description system was consolidated during the 18th century and thus, was still seldom used. At around 1815, description rates start rising, followed by a steep increase in rates from the middle of the 20th century onwards. The peak in description rates is reached at the beginning of the 21st century, where the highest numbers can be observed.
+
+These differences in description rates during periods of time may be further noticed by grouping them by century. I will create a new column (`desc_century`) which will include the century referred to each description year:
+
+```{r}
+df_master <- df_master %>% mutate(desc_century = case_when(desc_year < 1800 ~ "18th Century",
+                                      desc_year >= 1800 & desc_year < 1900 ~ "19th Century",
+                                      desc_year >= 1900 & desc_year < 2000 ~ "20th Century",
+                                      desc_year > 2000 ~ "21st Century"))
+```
+
+To group the variables the way I intend, I need a data frame in which each row contains a year, the number of descriptions for that year and the century it belongs to. I wrote a function (`century_freq`) that returns me a data frame just like that, according to the century I input to it:
+
+```{r}
+century_freq <- function(df,query){ # where df is the data frame I am working on
+                               # and query is the century being filtered
+  a <- df %>% filter(desc_century == query) 
+  b <- table(a$desc_year) %>% as.data.frame() %>% as_tibble() 
+  b['century'] <- query
+  return(b)
+}
+
+
+# example with the 19th century:
+
+(century_freq(df_master,"19th Century") %>% head())
+```
+
+Just need to map the function to a vector with all centuries I want to query and merge the output to a single data frame:
+
+```{r}
+y <- map(na.omit(unique(df_master$desc_century)),century_freq, df=df_master) %>% #map function to column
+        do.call("rbind",.) # create single data frame with the output
+```
+
+After creating the data frame, I can summarize all data I want to analyze, this will give me the total number of descriptions per century. I need that information to label the plot with each century sample size:
+
+```{r}
+(century_summ <- y %>% group_by(century) %>% summarize(sum=sum(Freq)))
+```
+
+Now I can join all this information and create a data frame that will be easier to use for plotting. I also created a column which will be used to label the sample size of each plot, the `label` column:
+
+```{r, message=FALSE}
+head( 
+y <- y %>% 
+      left_join(century_summ) %>% 
+      mutate(label = paste0(century,"\n","n=",sum))
+)
+```
+
+Using this data frame I can plot what I need:
+
+```{r, message=FALSE, fig.cap="Boxplots of the number of annual descriptions grouped by century.", fig.align="center", message=FALSE, warning=FALSE}
+pal=pnw_palette("Bay",5, type = "discrete") # color palette from pnwcolors package
+
+y %>% 
+  ggplot(aes(x=label,y=Freq, fill= century)) + 
+        geom_violin(alpha=0.2,width=1.5) +
+        geom_boxplot(width=0.05, alpha = 0.2) + 
+        ylab("Number of descriptions") +
+        xlab('') + 
+        theme(legend.position = "none",panel.background = element_blank()) +
+        scale_fill_manual(values=pal)
+
+```
+<br>
+The 21th century clearly outshines the remaining centuries in yearly description rates. Also, since only 20% of this century has passed so far, it has a relatively higher number of described species. The remaining trends repeat what was shown in the histogram/density plots, lower description rates during the 18th century, which also has a signficantly lower sample size, followed by an increase that is steady all along to the end of the 20th century.
+
+Several description peaks can be seen along the histogram and it would be probably be interesting to check some of them. I will take a look at the most productive years of the oldest and most recent centuries in the sample (18th and 21th, respectively): 
+
+```{r, message=FALSE}
+# most prolific years of each century
+y %>% 
+  group_by(century) %>% # group by centuries
+  slice(which.max(Freq)) %>% # get the highest description number for each
+  rename(year=Var1,n_descriptions=Freq,century=century) %>% # rename end extract columns
+  select(year,n_descriptions,sum)
+```
+
+1775 was the most prolific year of the 18th century, although it has a sample size of only 77 descriptions. Most descriptions of this year seem to be attributed to Jean Baptiste Aublet:
+
+
+```{r}
+df_master %>% 
+  filter(desc_year == 1775) %>% 
+  {table(.$descriptor)}
+```
+
+Since there are several duplicated entries for the same author, some cleaning can help the output. I wrote a function to do that, `clean_author`. Since it is rather extense, I will source it here. It still can be accessed in **here** (as all functions used in these analyzes). `clean_author` attempts to aggregate authorship by grouping entries according to its longest word. It is not bulletproof, but helps in this case:
+
+```{r}
+df_master %>% 
+  filter(desc_year == 1775) %>% 
+  {table(unlist(sapply(.$descriptor, clean_author)))}
+```
+
+This function could be highly improved using string similarity indexes in order to account for small typos, identify records that refer to books and also identify when other surnames are used referring to the same author. Although feasible, it is not necessary at all for now.
+
+Jean Baptiste Aublet was one of the ["earliest botanical explorers in South America"](https://en.wikipedia.org/wiki/Jean_Baptiste_Christophore_Fus%C3%A9e_Aublet) and described around 1,241 neotropical plant species in his 1775 "Histoire des plantes de la Guiane Françoise", which can explain, at least to some extent, the observed results. It is noteworthy though, that almost a third of the descriptions in this year do not have authors assotiated to them.
+
+Probably the most interesting result of this analysis regards the year with the most species descriptions from the 21st century (2001), which is also the year with the highest number in the whole time frame of the sample: 
+
+```{r}
+head(df_master %>% 
+       filter(desc_year == 2001) %>% 
+       {table(.$descriptor)} %>% 
+       as.data.frame() %>% 
+       arrange(desc(Freq))) %>% 
+  rename(author=Var1,species_descriptions=Freq)
+```
+<br>
+The "Orgs." that appear in the most prolific author of 2001, hints to it being linked to a publication. After googling a bit I found out that these entries can be traced to a book entitled "Biodiversidade de algas de ambientes continentais do Estado do Rio de Janeiro". Sadly, I could not find any online versions of it.
+
+By using the `clean_author` function in this case, I can render slightly better results:
+
+```{r}
+df_master %>% 
+  filter(desc_year == 2001) %>% 
+  {table(as.character(sapply(.$descriptor, clean_author)))} %>% 
+  sort(decreasing = T) %>% 
+  head()
+```
+
+It is worth noticing though, that by using the `clean_author` function I removed some information that helped me traceback the publication, another reason to use it with a grain of salt.
+
+An interesting fact is that, although most described species to date are angiosperms (by far):
+
+```{r}
+as_tibble(as.data.frame(sort(table(df_master$major_group)))) %>% 
+          arrange(desc(Freq)) %>% 
+          rename(Family=Var1,Species_number=Freq)
+```
+
+In 2001, this was not the case, as they were the second most described major group:
+
+```{r}
+df_master %>% 
+  filter(desc_year==2001) %>%
+  {table(.$major_group)} %>% 
+  as.data.frame() %>% 
+  as_tibble() %>% 
+  rename(Family=Var1,Species_number=Freq)
+```
+
+The number of Algae described in 2001 was almost the triple of that of angiosperms, most of these comprised in the Menezes *et al.* publication. Also, the number of Algae described in 2001 correspond to around 20% of all Algae descriptions in the sample.
+
+This poses some questions: does the distribution of descriptions through time differ for each of these major groups? Were given groups species described earlier or later? This can be done by combining different variables of the `df_master`. 
+
+## Major groups densities
+***
+
+To answer the previous questions, violin plots for yearly species descriptions grouped by major taxonomic groups shall work:
+
+
+```{r, dpi=300, fig.width=10, fig.height=5, fig.cap="Species yearly description densities across major taxonomic groups.",warning=FALSE,fig.align="center"}
+df_master %>% 
+  ggplot(aes(y=as.numeric(desc_year),x=major_group,fill=major_group)) +
+                xlab("Major group") + 
+                ylab("Description year") + 
+                geom_violin(color = "black") + 
+                scale_fill_manual(values=pal) + 
+                theme_bw() + 
+                theme(plot.title = element_text(hjust=0.5),
+                      legend.position = "none")
+```
+<br>
+
+It is clear that Algae has a higher number of its descriptions in more recent years. Bryophite descriptions share a similar behavior, although in a less striking manner. Both ferns and angiosperms have relatively more even distributions. It is interesting to notice that, whereas most of these major groups, independently of distribution shapes, have higher density values in recent years, this is not the case with gimnosperms. This group has most of its descriptions dating before the 20th century. This may be explained by the fact that this group is significantly less diverse (in overall species richness) than the others, explaining why most of its species were already described earlier.
+
+## Combining distribution variables:
+***
+
+Time to start adding some more information to the analysis. By combining distribution variables to species annual descriptions, I can observe how many species were described annually in each brazilian state.
+
+To plot that, I need to combine these information in a single data frame. Remembering that occurrence states for species are stored as a single string with each state being separated by a semicolon:
+
+```{r}
+df_master[["states"]][[100]] 
+```
+
+I need to split the state information, combine it with each description year and generate a data frame containing the number of species described per year per state. I wrote a function, `df_stack_parse` to do exactly that. This function returns a list with two data frames, the first one being the output I need for now:
+
+
+```{r}
+df_master$desc_year <- as.character(df_master$desc_year) # uhmmm isso nao deveria estar assim
+df_temp <- df_stack_parse(df_master,column1 = "desc_year",column2 = "states",slice_value = 3,parse1 = FALSE)
+
+df_temp[[1]] %>% rename(year=x,state=y,species_descriptions=value) %>% head()
+```
+
+This function achieves its goal by basically converting a data frame to a long format based on two columns whilst also parsing any column which need be so. Why this function returns a list of data frames and why there is a slice argument will make sense later on.
+
+With this data frame I can easily plot what I want: a heatmap representing the density of species described annually in each state. I wanted the states to be displayed on both sides of the plot, so I had to do some tricks to obtain that:
+
+
+```{r, fig.align="center",dpi=300,fig.cap="Heatmap of species yearly descriptions grouped by federation state. States are grouped by region. Black cells correspond to NA or zero values."}
+
+x <- df_temp[[1]] # select the output I need from df_stack_bar
+x <- x %>% filter(y != "NA") # remove NA values that were formatted as string
+x$x <- as.numeric(x$x) # convert year column to numeric
+x$y <- as.factor(x$y) # need to change the state column type to factor
+                      # this will let me "disguise" these values as continuous
+                      # which is how I will get thoses states on both sides
+x <- x %>% filter(!is.na(y)) #remove true NA's
+labs2 <- levels(x$y) # store the factor levels
+labs2 <- c("ES", "MG", "RJ","SP", 
+                         "PR","RS","SC",
+                         "DF","MS","MT","GO",
+                         "SE","RN","PI","PE","PB","MA","CE",
+                         "BA","AL","TO","RR","RO","PA","AM","AP","AC")
+
+
+
+
+# plotting the heatmap:
+
+x %>% 
+  mutate(y = fct_relevel(y, 
+                         "ES", "MG", "RJ","SP", 
+                         "PR","RS","SC",
+                         "DF","MS","MT","GO",
+                         "SE","RN","PI","PE","PB","MA","CE",
+                         "BA","AL","TO","RR","RO","PA","AM","AP","AC")) %>% 
+  ggplot(aes(x, as.numeric(y), fill= value)) + #converting state names to numeric values
+  geom_tile(colour = "black") + 
+  scale_fill_gradientn(colours = pal, name = "Descriptions", na.value = "black") + 
+  xlab("Year") + ylab("State") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90),
+        plot.title = element_text(hjust=0.5),
+        panel.background = element_rect(fill="black", colour="black"),
+        panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) + 
+  scale_x_continuous(breaks = seq(1750,2020,10), 
+                     expand = c(0,0)) + # remove panning
+  scale_y_continuous(breaks = 1:length(labs2), 
+                     labels = labs2, # mask factor values as names
+                     sec.axis = sec_axis(~., # secondary axis, only works with continuous values
+                                         breaks = 1:length(labs2),
+                                         labels = labs2),expand = c(0,0)) 
+
+```
+
+Several aspects of the data previously plotted still can be seen in this heatmap. For example, recent years have, on average, higher description numbers, irrespective of state. Even when the data is sorted this way, the high density of species descriptions for the Rio de Janeiro state during 2001 stands out, a reflection of the Menezes *et. al* publication. Also, some states seem to have way higher recent relative description densities than others. Since most of the novelty in this plot is concentrated in recent years, zooming to these may give me a clearer view of what is going on:
+
+
+```{r, fig.cap="Annual descriptions grouped by state between 1990 and 2019. These values are still relative to the whole sample."}
+x %>% 
+  mutate(y = fct_relevel(y, 
+                         "ES", "MG", "RJ","SP", 
+                         "PR","RS","SC",
+                         "DF","MS","MT","GO",
+                         "SE","RN","PI","PE","PB","MA","CE",
+                         "BA","AL","TO","RR","RO","PA","AM","AP","AC")) %>% 
+  ggplot(aes(x, as.numeric(y), fill= value)) + 
+  geom_tile(colour = "black") + 
+  scale_fill_gradientn(colours = pal, 
+                       name = "Species count",
+                       na.value = "black") + 
+  xlab("Year") + ylab("State") + 
+  theme_bw() +
+   geom_vline(xintercept=2000, linetype = "dashed",size = 0.5) +
+   geom_vline(xintercept=2010, linetype = "dashed",size = 0.5) +
+  theme(axis.text.x = element_text(angle = 90),
+        plot.title = element_text(hjust=0.5)) + 
+  coord_cartesian(xlim = c(1990,2019)) + # limited the years appearing in the plot
+  scale_x_continuous(breaks = seq(1990,2019,1), expand = c(0,0)) + 
+  scale_y_continuous(breaks = 1:length(labs2), 
+                     labels = labs2,
+                     sec.axis = sec_axis(~., 
+                                         breaks = 1:length(labs2),
+                                         labels = labs2),expand = c(0,0))
+```
+
+It seems like the decade between 2000 and 2010 (dashed lines) was the most prolific, plant description wise. Also, some states definitively have higher density than others, specially the Rio de Janeiro, Sao Paulo, Bahia, Minas Gerais, Espirito Santo and Parana states. Of these six states, four belong to Brazil's southeastern region, some being amongst the smallest states in Brazil. This, in part, reflects the oversampling of these regions, since these are generally richer parts of the country, with more income destinated to science. 
+
+Even so, one could expect a higher number of descriptions to states such as Amazonas (AM), which is amongst the largest in Brazil, besides harbouring most of the amazon forest. This does not seem to be the case. It is important to notice that only absolute native species richness is being used, which fails to incorporate other aspects of diversity, such as endemism or phylogenetic diversity.
+
+If I add a little bit more extra information to this analysis, I can explore even more these variables. I will create a small data frame called `df_states` with some additional information regarding brazilian states. I will include in this data frame if a given state borders neihbouring countries or not and each state's total area:
+
+```{r}
+#vector with the initial of each state
+states <- c("TO","SE","SP","SC","RR","RO","RS","RN","RJ","PI","PE","PR","PB","PA","MG","MS","MT","MA","GO","ES","DF","CE","BA","AM","AP","AL","AC")
+
+# does the state border neighbouring countries?
+border <- c("no","no","no","yes","yes","yes","yes","no","no","no","no", "yes","no","yes","no","yes","yes","no","no","no","no","no","no", "yes","yes","no","yes")
+
+#area of each state in km2
+area <- c(277720,21915,248222,95736,224300,237590,281730,52811,43780,251577,98311,199307,56585,1247954,586522,357145,903366,331937,340111,46095,5779,148920,564733,1559159,142828,27778,164123)
+
+#combine all in a df 
+df_states <- tibble(state=states,area=area,border=border) 
+
+head(df_states)
+```
+
+
+
+Now I need the number of species and proportion of endemics in each state, included in `df_states`. To do that, I will use `df_stack_parse` once again, changing the arguments and then summarizing the number of endemics in each state. I will also create another df with species counts per state again. After that I will join these two df's, calculate the proportion of endemics for each and join this information to `df_states`.
+
+First a different data frame with species counts per state divided between endemics and non endemics.
+
+```{r}
+#endemics and non endemics counts per state
+df_state_endemism <- df_stack_parse(df_master,column1 = "endemism",column2 = "states",parse1 = FALSE)[[1]] # note here that the column "endemism" does NOT need parsing (parse1 = FALSE)
+```
+
+Exemplifing the output with a single state:
+
+```{r}
+df_state_endemism %>% filter(y=="RJ")
+```
+
+Now I will sum the total value for each state and join that information with a data frame containing only endemic species per state. After that I calculate the proportions:
+
+```{r}
+# total number of species per state
+a <- df_state_endemism %>% 
+      group_by(y) %>% 
+      summarise(species=sum(value))
+# number of endemics per state
+b <- df_state_endemism %>% filter(x=="Endemica") %>% group_by(y) %>% summarise(endemics=sum(value))
+
+#join both and calculate proportions
+
+(c <- left_join(a,b,by = "y") %>% # joining the data
+      mutate(prop= endemics*100/species) %>% # creating column with propotions
+      rename(state=y)) # renaming the state column
+
+```
+
+Now I just need to join the information:
+
+```{r}
+(k <- left_join(c,df_states,by="state"))
+```
+
+By plotting all these variables in a single graph, I may visualize three things:
+
+
+1. Does size and species richness seem to be correlated? 
+2. Do states with international borders have a lower proportion of endemics?
+3. Which states have the highest number of species and proportion of endemics?
+
+I will do that by plotting two graphs: a scatterplot of the proportion of endemics and number of species for each state, where the size of each point is proportional to each state's area and are colored according to the presence/absence of international borders. I will also plot a boxplot with the proportion of endemics between border and borderless states. I will use `ggrepel` and `cowplot` to aid me in plot annotation and display:
+
+
+```{r,fig.width=11, fig.height=5, fig.align="center", fig.cap="Scatter plot (A) of the proportion of species endemic to Brazil (y axis) and the species richness (x axis) of brazilian states. The size of the points is proportional to the area of each state. Information in red regard states that border neighboring countries and blue that the state does not have international borders. The boxplots (B) of the proportion of endemics grouped by the presence or absence of borders indicates that states that border countries seem to have a lower proportion of endemic species."}
+# small workaround for me to label specific points in the plot
+k[['temp']] <- ""
+labels <- c(13,3,11,15,5,20,27,8,9)
+k[['temp']][labels] <- k$state[labels]
+
+# first plotting the scatterplot 
+
+p1 <- k %>% filter(state != "NA") %>% ggplot(aes(x=species,y=prop,size=area,label=state,color=border)) + 
+  geom_point() + 
+  scale_color_manual(values=c(pal[1],pal[5]), name = "miau") + 
+  geom_hline(yintercept=20, linetype = "dashed",size = 0.1) +
+  geom_hline(yintercept=40, linetype = "dashed",size = 0.1) +
+  ylab("Proportion of endemics (%)") +
+  theme_bw() +
+  geom_label_repel(aes(label = temp),
+                   box.padding   = 0.35, 
+                   point.padding = 0.5,
+                   segment.color = 'grey50') +
+  scale_size(guide = "none") +
+  theme(legend.position = "none")
+  
+# now the boxplot
+
+p2 <- k %>% na.omit() %>% ggplot(aes(y=prop,fill=border,x=border)) + 
+  geom_boxplot() +
+  theme_bw() + 
+  scale_fill_manual(values = c(pal[1],pal[5])) +
+  ylab("Proportion of endemics (%)") +
+  xlab("") + 
+  theme(axis.text.x = element_blank(),legend.position = "left") +
+  labs(fill = " International \n border")
+
+# combining both in a single grid
+
+(p3 <- plot_grid(p1,p2, ncol = 2, labels = c("A","B")))
+
+```
+<br> 
+
+There is alot of information contained in this image. Firstly, answering my questions, it does not seem that species richness and state area seem to be that much correlated. The largest brazilian states (AM, PA and MT) still account for less species than RJ and SP, for example, which are very small states. Not only are southeastern states (RJ, MG, SP and ES) species rich (as observed in the heat map), they are also amongst the states with the highest species richness/endemism proportion ratio. Borders seem to have influence in endemic species proportions. **All** states with endemism proportions higher than 40% do not border other countries. At the same time, all states with less than 20% endemism proportions border neighbouring countries. This difference is reinforced by the boxplots.
+
+
+It is also worth noting that all of the four states with highest values of species richness and endemism proportion harbour mostly the Atlantic Rainforest and Cerrado domains, two global biodiversity hotspots, known for high level of overrall diversity. These domains, alongside the Caatinga have the highest proportions of endemism in the country:
+
+```{r, dpi=300, fig.width=10, fig.height=5, fig.cap="Endemic species proportions between domains. The Atlantic Rainforest, Cerrado and Caatinga are the domains with the highest endemism proportions."}
+df_temp <- df_stack_parse(df_master,column1 = "endemism",
+                          column2 = "phytogeographic_domains",
+                          parse1 = FALSE, slice_value = 3)
+  df_temp[[1]] %>% 
+    mutate(y = fct_relevel(y, 
+                          "Mata Atlântica", "Cerrado", "Caatinga", 
+                          "Amazônia", "Pampa", "Pantanal")) %>%
+  ggplot(aes(fill=x, y=value, x=y)) + 
+    xlab("Proportion") +
+    ylab("Phytogeographic domain") +
+  geom_bar(position="fill", stat="identity", color = "black") +
+  theme_bw()  +
+  scale_fill_manual(name = "Endemism",values=c(pal[5],pal[1]), aesthetics = "fill",labels=c("Endemics","Non endemics"))
+```
+
+Although the data makes it natural to expect this outcome, it is still worth seeing the difference in endemism proportion between these domains. Also, the domains with highest proportion of endemism also have less of their boudaries next to other countries. Endemic, in this case and all next, refers to species endemic to the country.
+
+
+## Including ecological variables: Life forms and vegetation types:
+***
+
+There are still some more variables to check out. I have information about the life form and vegetation type of occurrence for each species, which I still did not analyze and, as such, will explore further. 
+
+Firstly, a glimpse of the most frequent life forms of brazilian native species:
+
+
+```{r, fig.align="center",fig.cap="Number of species categorized with each of the unique life form categories of the sample."}
+df_life_forms <- as_tibble(as.data.frame(table(unlist(strsplit(df_master$life_form,split=";")))))
+df_life_forms %>% 
+  mutate(Var1=fct_reorder(Var1,desc(Freq))) %>% 
+  ggplot(aes(fill=Var1,y=Freq,x=Var1)) + 
+         geom_col(position = "dodge",fill=pal[1], color = "black") + 
+         xlab("Life form") +
+         ylab("Species count") +
+         theme_bw() +
+         theme(axis.text.x = element_text(angle = 90,size = 10))
+```
+
+These results fare close to the expected, since the most frequent life forms are also those particularly related to angiosperms. Those are followed by aquatic life forms, assotiated with algae, which are the second most species rich group, although with richness significantly lower than that of angiosperms. These are followed by bryophite life forms, with the remaining low ranking life forms belonging to several major groups. This is quite in line with overral major group frequency:
+
+```{r}
+sort(table(df_master$major_group),decreasing = T)
+```
+
+Herbs are by far the most sampled life forms, followed by trees. That may be explained by the ease in which these may be collected in the field. 
+
+
+Life forms are closely assotiated with the type of vegetation in which species occur. One would not, for example, expect a high frequency of moss species occurring in a dry climate vegetation. By plotting the most frequent vegetation types assotiated to each life form, I can check if there is anything interesting to notice there.
+
+I will do that by plotting a stacked bar graph using the `df_stack_parse` function again. Now the slice argument (unexplained previously) comes in handy. By using it, the second data frame generated by the function keeps only the top results for a given category, according to the slice argument. So in this case, I will set it to 3 and get as an result the top 3 vegetation types for each life form. I will also further clean the `vegetation_type` column from `df_master`, removing some symbols that may glitch the plot:
+
+```{r, warning=FALSE,fig.align="center", fig.width=12,fig.cap="Proportion of vegetation types amongst the three most frequent for each life form"}
+
+#removing the suspected problematic symbols
+df_master$vegetation_type <- gsub("\\(","",df_master$vegetation_type)  
+df_master$vegetation_type <- gsub("\\)","",df_master$vegetation_type)
+df_master$vegetation_type <- gsub("=","",df_master$vegetation_type)
+
+# Applying df_stack_parse to the columns and plotting
+    #slicing to 3
+
+df_temp <- df_stack_parse(df_master,column1 = "life_form",column2 = "vegetation_type",slice_value = 3)
+
+  df_temp[[2]] %>% #select sliced df from the function output 
+  ggplot(aes(fill=y, y=value, x=x)) + 
+  ylab("Proportion") + 
+  xlab("") +
+  geom_bar(position="fill", stat="identity", color = "black") + 
+    scale_fill_brewer(palette = "Paired") + 
+    theme_bw() + 
+    labs(fill='Vegetation type') +
+    theme(axis.text.x = element_text(angle = 90,size = 12),
+          legend.text=element_text(size=15),
+          legend.title = element_text(size=12))
+```
+
+Aquatic species have no vegetation types associated to them, hence the missing data in the plot. For the remaining, some can be said. Firstly, most life forms have Ombrophilous Forest (orange) as a significant part of the top 3 vegetation types of occurrence. That is expected as the overall importance of the Atlantic Rainforest in species diversity was already seen and this vegetation type is typical to this domain. Cerrado lato sensu (dark green) is also quite common across life forms, for the same reasons as the previous case.
+
+Trees are mostly related to forest vegetation types, which is different from bushes, which have typical Cerrado vegetation assotiated with them. For succulents, the most frequent vegetation type among the top 3 is related to rocky outcrops (dark purple).
+
+Another interesting aspect of this plot is the frequent presence of the Araucaria Forest vegetation (light purple) in several life forms. This is interesting since this vegetation type is of fairly small extent. Less than 5% of the original cover of this vegetation is estimated to remain. What is even more curious about this, is the fact that all life forms in which this vegetation appears (in the plot) belong to bryophites (maybe a directed effort or publication?). 
+
+
+## Species, names and families
+***
+
+So far, I have analyzed most of the data compiled in `df_master`. Of the three main groups of data I set to explore, only the vernacular information remains. Only around 10% of the species have this information available, which significantly lowers the sample. Even so, it may be worth exploring it. I want to answer two basic questions:
+
+1. Which are the most frequent names in the sample?
+2. Do common names refer to species from different taxonomic families?
+
+This data is a little more sensitive to work on, since it has a series of trancript issues. Taking the name "alecrim" for example:
+
+```{r}
+unique(grep("alecrim",df_master$vernacular_name, value = T, ignore.case = T))
+```
+
+There are entries that contain upper case letters, although most contains lower case. Besides that, some names contain "-" and others don't. By replacing all "-" to a space, I can solve this issue. There are also some entries that are separated by a comma instead of a semicolon, such as:
+
+```{r}
+unique(df_master$vernacular_name)[917]
+```
+
+Just need to take care of both cases:
+
+```{r}
+# remove "-"
+df_master$vernacular_name <- tolower(gsub("-"," ",df_master$vernacular_name))
+
+# replace ","
+df_master$vernacular_name <- tolower(gsub(",",";",df_master$vernacular_name))
+```
+
+Now I can answer my first question. By splitting the strings from the `vernacular_name` column, I can quickly find out the most frequent names in the sample: 
+
+```{r}
+a <- unlist(strsplit(df_master$vernacular_name,split=";"))
+b <- table(na.omit(unlist(strsplit(a,split=","))))
+c <- as_tibble(as.data.frame(b))
+head(c %>% arrange(desc(Freq)))
+```
+
+Taquara is the most frequent common name of the sample. This name relates mostly with a variety of [bamboos](https://pt.wikipedia.org/wiki/Taquara) (Poaceae family). These species are known for having a wide array of different utilities, being used, for example, from construction to the creation of musical instruments. In this case, all species assotiated to this name belong to the same family:
+
+```{r}
+unique(df_master$family[grep("taquara",df_master$vernacular_name,ignore.case = T)])
+```
+
+The second and third names (envira and envireira) seem correlated and refer to trees of the Annonnaceae family, known mostly for the quality of their wood. In this case though, several species from different families seem to be assotiated to the names, taking "envira" as an example:
+
+```{r}
+table(df_master$family[grep("envira",df_master$vernacular_name,ignore.case = T)])
+```
+
+Although most species known as "envira" are from the Annonaceae family, several other plant families appear assotiated to the name, in lower frequencies. 
+
+The same is true for the name "envireira":
+
+```{r}
+table(df_master$family[grep("envireira",df_master$vernacular_name,ignore.case = T)])
+```
+
+It is not unexpected to find results like these, since it is commonly known that plant popular names can refer to species from different taxonomic groups, which answers my final question of this analysis.  
+
+# TL;DR
+
+Analysis highlights: 
+
+1. Most species of the brazilian flora were described between 2000 and 2010. The year with the highest number of descriptions is 2001, when around 602 algae were described, these being linked to a published book: 
+
+```{r, echo=FALSE, fig.cap="Annual descriptions grouped by state in between 1990 and 2019."}
+x %>% 
+  ggplot(aes(x, as.numeric(y), fill= value)) + 
+  geom_tile(colour = "black") + 
+  scale_fill_gradientn(colours = pal, 
+                       name = "Species count",
+                       na.value = "black") + 
+  xlab("Year") + ylab("State") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90),
+        plot.title = element_text(hjust=0.5)) + 
+  coord_cartesian(xlim = c(1990,2019)) + # limited the years appearing in the plot
+  scale_x_continuous(breaks = seq(1990,2019,1), expand = c(0,0)) + 
+  scale_y_continuous(breaks = 1:length(labs2), 
+                     labels = labs2,
+                     sec.axis = sec_axis(~., 
+                                         breaks = 1:length(labs2),
+                                         labels = labs2),expand = c(0,0))
+```
+
+2. The distribution of the number of species descriptions through time do not behave equally among major taxonomic groups:
+
+```{r, echo=FALSE, dpi=300, fig.width=10, fig.height=5, fig.cap="Species yearly description densities across major taxonomic groups.",warning=FALSE,fig.align="center"}
+df_master %>% 
+  ggplot(aes(y=as.numeric(desc_year),x=major_group,fill=major_group)) +
+                xlab("Major group") + 
+                ylab("Description year") + 
+                geom_violin(color = "black") + 
+                scale_fill_manual(values=pal) + 
+                theme_bw() + 
+                theme(plot.title = element_text(hjust=0.5),
+                      legend.position = "none")
+```
+
+
+3. All states containing a proportion of 40% of endemic species from its total, **do not** border neighbouring countries (blue), the contrary (red) is true for states containing less than 20% of species as endemics:
+
+```{r, echo=FALSE}
+p3
+```
+
+4. Taquara is the most frequent vernacular name in the sample. The same vernacular name can be given to species belonging to several different taxonomic families.
+
+
+# Epilogue
+
+As stated, this exercise’s purpose was to have a broader overview of some aspects of brazilian plant data, while storing some snippets and showcasing some code. Some of the results were quite expected based on common knowledge and available information, but several were not and, although still not robustly tested, they were quite interesting. It is never enough to state how far ahead Brazil is regarding the documentation of its flora, with a set of information not commonly available in other countries. Some variables analyzed here were incomplete here and may (or may not) yield different results if made fully available (which will probably never happen since some species will never have all of their information available).
+
+The number of described algae in 2001, its link to a publication and the difference in the description rates for different taxonomic major groups were quite interesting results. Also, the relation between borders and regions in overall state species rich and endemism proportions was also nice to observe.
+
+Several more aspects of these variables will be slowly added to this markdown file, as also other analyzes will also slowly be added to my github.
+
+
