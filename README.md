@@ -4,4 +4,4 @@ This repo contains the code for a small analysis I did using data [from the Flor
 
 The output document can be accessed [here in my github pages]().
 
-The r markdown file that generated the analysis is stored in the [data]() folder. Functions are stored in the [scripts]() folder.
+The r markdown file that generated the analysis is stored in the [markdown]() folder. Functions are stored in the [scripts]() folder.
