@@ -29,7 +29,7 @@ p.caption {
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-knitr::opts_knit$set(root.dir = "C:/Users/morae/Dropbox/tech/github/flora2020_analysis")
+knitr::opts_knit$set(root.dir = "/home/zazen/github/flora2020_analysis/")
 ```
 
 
@@ -82,12 +82,13 @@ Second thing is to download the data and start compiling and wrangling all infor
 
 I will download the most updated DwC-A, which currently refers to February 14th, 2020. This may take some time depending on internet speed and can also be done manually:
 
+**reativar isso aqui**
 
-```{r, message=FALSE,warning=FALSE}
+#```{r, message=FALSE,warning=FALSE}
 url <- 'http://ipt.jbrj.gov.br/jbrj/archive.do?r=lista_especies_flora_brasil&v=393.224'
 download.file(url, destfile = "data.zip", mode="wb")   
 unzip(zipfile = "data.zip",exdir = "data")
-```
+
 
 The information I seek is in the .txt files contained in the DwC-A:
 
