@@ -1,7 +1,5 @@
 # Flora 2020 project analysis
 
-This repo contains the code for a small analysis I did using data [from the Flora 2020 project](http://ipt.jbrj.gov.br/jbrj/resource?r=lista_especies_flora_brasil). I basically compiled and cleaned some data, in order to plot some variables and check some patterns. I also used it to store some of my code for future use.
+Repositório contendo o código de uma pequena análise que fiz, usando dados do [projeto Flora 2020](http://ipt.jbrj.gov.br/jbrj/resource?r=lista_especies_flora_brasil) e publiquei como GitHub Pages.
 
-The output document can be accessed [here in my github pages]().
-
-The r markdown file that generated the analysis is stored in the [markdown]() folder. Functions are stored in the [scripts]() folder.
+O documento de output pode ser acessado [aqui](https://moraessaur.github.io/flora2020_analysis/).
